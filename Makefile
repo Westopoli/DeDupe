@@ -2,19 +2,12 @@ CC = gcc
 CD = gdb
 
 PROG_NAME = project2
-
 SOURCES = src/main.c src/dedupe.c src/hash_functions.c
-
 VER = c23
-
 BUILD_DIR = ./build
-
 CFLAGS = -std=$(VER) -O3 -g -Wall -Wconversion -fanalyzer -fsanitize=address,undefined,leak -fsanitize-trap=undefined
-
 TEST_INPUT = input.txt
-
 TEST_OUTPUT_NAME = out
-
 LIBS = -lcrypto
 
 run: build
