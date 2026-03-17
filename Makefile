@@ -1,10 +1,40 @@
-all: project2
+CC = gcc
+CD = gdb
 
-project2: main.c dedupe.c hash_functions.c dedupe.h hash_functions.h
-	gcc -O3 main.c dedupe.c hash_functions.c -lcrypto -o project2
+PROG_NAME = dedup
 
-test:
-	cat input.txt
-	./project2 input.txt 4 out1.txt
-	./project2 input.txt 2 out2.txt
+SOURCES = main.c dedupe.c hash_functions.c
+
+VER = c23
+
+BUILD_DIR = ./build
+
+CFLAGS = -std=$(VER) -O3 -g -Wall -Wconversion -fanalyzer -fsanitize=address,undefined,leak -fsanitize-trap=undefined
+
+TEST_INPUT = input.txt
+
+TEST_OUTPUT_NAME = output
+
+LIBS = 
+
+run: build
+	$(BUILD_DIR)/$(PROG_NAME)
+
+build: $(SOURCES)
+	mkdir -p $(BUILD_DIR)
+	$(CC) -o $(PROG_NAME) $(CFLAGS) $(LIBS) $(SOURCES)
+	mv $(PROG_NAME) $(BUILD_DIR) 
+
+clean:
+	rm -rf $(BUILD_DIR)
+
+debug: build
+	$(CD) $(BUILD_DIR)/$(PROG_NAME)
+
+test: build $(TEST_INPUT)
+	echo Running tests...
+	cat $(TEST_INPUT)
+	$(BUILD_DIR)/$(PROG_NAME) $(TEST_INPUT) 4 $(TEXT_OUTPUT_NAME)1.txt
+	$(BUILD_DIR)/$(PROG_NAME) $(TEST_INPUT) 2 $(TEXT_OUTPUT_NAME)2.txt
+	echo Results:
 	head out*.txt
