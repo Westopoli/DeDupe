@@ -14,9 +14,8 @@ int compare_hashes(unsigned char *a, unsigned char *b, int n) {
 
 // Function name: dedupe
 // Description:   Computes a hash for each chunk of the input file, and the
-// obtained hashes
-//                to each other to determine the number of unique chunks in the
-//                file
+// obtained hashes to each other to determine the number of unique chunks in the
+// file
 void dedupe(char *filename, int chunk_size, char *output) {
   FILE *fp;
   char *buffer = (char *)malloc(chunk_size * sizeof(char));
