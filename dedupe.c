@@ -199,6 +199,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <stdint.h>
 
 #include "hash_functions.h"
 
@@ -277,14 +278,14 @@ void detect_duplicates(unsigned char **hashes, int n_hashes, int hash_size, char
 	int *mask = malloc(n_hashes * sizeof(int));
 
 	for(int i = 0; i <= n_hashes; i++) {
-		mask[i] = hashtable_insert_or_find(table, i, hashes, hash_size);
+		mask[i] = hashtable_find_or_insert(table, i, hashes, hash_size);
 	}
 
 	hashtable_destroy(table);
 
 	for(int i = 0; i <= n_hashes; i++) {
 		fputc('0' + mask[i], fp);
-		fputc("\n", fp);
+		fputc('\n', fp);
 	}
 
 	fclose(fp);
