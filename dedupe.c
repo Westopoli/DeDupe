@@ -209,6 +209,88 @@ int compare_hashes(unsigned char *a, unsigned char *b, int n) {
 	return 1;
 }
 
+typedef struct {
+	int *slots;         
+    int table_size;
+    int mask;           
+} HashTable;
+
+HashTable* hashtable_create(int n_hashes) {
+	size_t table_size = 16;
+	while (table_size < (size_t)n_hashes * 2) {
+		table_size = table_size << 1;
+	}
+
+	HashTable* tablePtr = malloc(sizeof(HashTable));
+	tablePtr->table_size = table_size;
+	// we'll use this to compute index with AND instead of % (faster)
+	// starting at 0 for bitwise ops
+	tablePtr->mask = table_size - 1;
+
+	// index for hash
+	tablePtr->slots = malloc(table_size * sizeof(int));
+	for (int i = 0; i < table_size; i++) {
+		tablePtr->slots[i] = -1;
+	}
+
+	return tablePtr;
+}
+
+void hashtable_destroy(HashTable *table) {
+	free(table->slots);
+	free(table);
+}
+
+int hashtable_find_or_insert(HashTable *table, int chunk_id, unsigned char **hashes, int hash_size) {
+	uint64_t key;
+	memcpy(&key, hashes[chunk_id], sizeof(uint64_t));
+	// this is the bitwise mentioned before, faster than %
+	int slot = (int)(key & (uint64_t)table->mask);
+
+	// probe the table in a loop
+	while(1) {
+		if(table->slots[slot] == -1) {
+		// slot is empty, populate
+		table->slots[slot] = chunk_id;
+		return 0;
+	}
+	else {
+		// if hash location has already filled, move to next slot
+		if(memcmp(hashes[chunk_id], hashes[table->slots[slot]], hash_size)) {
+			return 1; 
+		}
+		slot = (slot + 1) & table->mask;
+		}
+	}
+}
+
+void detect_duplicates(unsigned char **hashes, int n_hashes, int hash_size, char *output) {
+	FILE *fp = fopen(output, "w");
+
+	// zero chunks edge case
+	if(n_hashes == 0) {
+		fprintf(fp, "\n");
+		fclose(fp);
+	}
+
+	HashTable *table = hashtable_create(n_hashes);
+	int *mask = malloc(n_hashes * sizeof(int));
+
+	for(int i = 0; i <= n_hashes; i++) {
+		mask[i] = hashtable_insert_or_find(table, i, hashes, hash_size);
+	}
+
+	hashtable_destroy(table);
+
+	for(int i = 0; i <= n_hashes; i++) {
+		fputc('0' + mask[i], fp);
+		fputc("\n", fp);
+	}
+
+	fclose(fp);
+	free(mask);
+}
+
 // Function name: dedupe
 // Description:   Computes a hash for each chunk of the input file, and the obtained hashes
 //                to each other to determine the number of unique chunks in the file
@@ -252,26 +334,3 @@ void dedupe(char *filename, int chunk_size, char *output) {
 		free(hashes[i]);
 	free(hashes);
 }
-
-typedef struct {
-	int *slots;         // array of length table_size, each initialized to -1
-    int table_size;     // always a power of 2
-    int mask;           // table_size - 1, used for bitwise index masking
-} HashTable;
-
-void DetectDuplicates(int n_hashes) {
-	// size_t to handle large table sizes
-	size_t table_size = 16;
-	while (table_size < (size_t)n_hashes * 2) {
-		table_size = table_size << 1;
-	}
-	
-	// Bucket index computation
-
-	// Probe and insert logic
-
-	// Dupliate detection pass
-
-	
-}
-
