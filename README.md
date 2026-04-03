@@ -14,20 +14,4 @@ State Trace:
 
 ## Flow
 
-------------------------------------------------------------
-STAGE INTERFACES (TEAM CONTRACT)
-------------------------------------------------------------
-Stage1 -> Stage2:
-- Input: (input_path, chunk_size, read_mode)
-- Output: chunks[] with {chunk_id, offset, length, data_ref}
-
-Stage2 -> Stage3:
-- Input: chunks[]
-- Output: hash_results[] indexed by chunk_id
-
-Stage3 -> Final:
-- Input: hash_results[]
-- Output: duplicate_groups[] + output file content
-
-Stage4 (cross-cutting):
-- Synchronization primitives + error handling + tests + benchmarks
+<img width="200" height="460" alt="dedupe_function_sequential_state_flow" src="https://github.com/user-attachments/assets/b708a7b9-c47e-40a3-8961-6367fa42f6b5" />
