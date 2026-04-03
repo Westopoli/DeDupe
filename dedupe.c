@@ -102,7 +102,6 @@ void dedupe(char *filename, int chunk_size, char *output) {
 
 	int *output_mask = detect_duplicates(hashes, n_hashes, hash_size);
 
-	// print results
 	fp = fopen(output, "w");
 	assert(fp != NULL);
 	for(int i=0; i < n_hashes; i++)
