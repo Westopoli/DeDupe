@@ -265,31 +265,17 @@ int hashtable_find_or_insert(HashTable *table, int chunk_id, unsigned char **has
 	}
 }
 
-void detect_duplicates(unsigned char **hashes, int n_hashes, int hash_size, char *output) {
-	FILE *fp = fopen(output, "w");
-
-	// zero chunks edge case
-	if(n_hashes == 0) {
-		fprintf(fp, "\n");
-		fclose(fp);
-	}
+int* detect_duplicates(unsigned char **hashes, int n_hashes, int hash_size) {
 
 	HashTable *table = hashtable_create(n_hashes);
 	int *mask = malloc(n_hashes * sizeof(int));
 
-	for(int i = 0; i <= n_hashes; i++) {
+	for(int i = 0; i < n_hashes; i++) {
 		mask[i] = hashtable_find_or_insert(table, i, hashes, hash_size);
 	}
-
 	hashtable_destroy(table);
 
-	for(int i = 0; i <= n_hashes; i++) {
-		fputc('0' + mask[i], fp);
-		fputc('\n', fp);
-	}
-
-	fclose(fp);
-	free(mask);
+	return mask;
 }
 
 // Function name: dedupe
@@ -311,21 +297,13 @@ void dedupe(char *filename, int chunk_size, char *output) {
 	}
 	fclose(fp);
 
-	int mask[n_hashes];
-	for(int i=0; i < n_hashes; i++)
-		mask[i] = 0;
-	for(int i=0; i < n_hashes; i++)
-		for(int j=i+1; j < n_hashes; j++)
-			if(compare_hashes(hashes[i], hashes[j], hash_size)) {	
-				mask[j] = 1;
-				break;
-			}
+	int *output_mask = detect_duplicates(hashes, n_hashes, hash_size); // <-------- call to detect_duplicates
 
-	// print results
 	fp = fopen(output, "w");
 	assert(fp != NULL);
 	for(int i=0; i < n_hashes; i++)
-		fprintf(fp, "%d", mask[i]);
+		fprintf(fp, "%d", output_mask[i]);
+
 	fprintf(fp, "\n");
 	fclose(fp);
 
@@ -334,4 +312,5 @@ void dedupe(char *filename, int chunk_size, char *output) {
 	for(int i=0; i < n_hashes; i++)
 		free(hashes[i]);
 	free(hashes);
+	free(output_mask);
 }
