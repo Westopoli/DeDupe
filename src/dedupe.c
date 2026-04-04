@@ -49,18 +49,21 @@ int hashtable_find_or_insert(HashTable *table, int chunk_id,
                              unsigned char **hashes, int hash_size) {
   uint64_t key;
   memcpy(&key, hashes[chunk_id], sizeof(uint64_t));
-
-  // this is the bitwise mentioned before, faster than %
   int slot = (int)(key & (uint64_t)table->mask);
-	
-  if (table->slots[slot] == -1) {
-    // slot is empty, populate
-    table->slots[slot] = chunk_id;
-
-    return 0;
+    
+  // Linear Probing: loop as long as the slot is occupied
+  while (table->slots[slot] != -1) {
+    
+    if (memcmp(hashes[chunk_id], hashes[table->slots[slot]], hash_size) == 0) {
+      return 1; // True duplicate found
+    }
+    
+    slot = (slot + 1) & table->mask;
   }
 
-	return 1;
+  table->slots[slot] = chunk_id;
+
+  return 0; // Unique chunk, successfully inserted
 }
 
 int *detect_duplicates(unsigned char **hashes, int n_hashes, int hash_size) {
