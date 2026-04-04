@@ -3,8 +3,93 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
 
 #include "hash_functions.h"
+
+#define MAX_THREADS 11
+#define QUEUE_SIZE 100
+
+typedef struct {
+    char *data;
+    int size;
+    int pos;
+} Chunk;
+
+typedef struct {
+    Chunk *items[QUEUE_SIZE];
+    int head, tail, count;
+    pthread_mutex_t lock;
+    pthread_cond_t not_empty;
+    pthread_cond_t not_full;
+} Queue;
+
+Queue queue;
+
+void queue_init(Queue *q) {
+    q->head = q->tail = q->count = 0;
+    pthread_mutex_init(&q->lock, NULL);
+    pthread_cond_init(&q->not_empty, NULL);
+    pthread_cond_init(&q->not_full, NULL);
+}
+
+void enqueue(Queue *q, Chunk *item) {
+    pthread_mutex_lock(&q->lock);
+
+    while (q->count == QUEUE_SIZE)
+        pthread_cond_wait(&q->not_full, &q->lock);
+
+    q->items[q->tail] = item;
+    q->tail = (q->tail + 1) % QUEUE_SIZE;
+    q->count++;
+
+    pthread_cond_signal(&q->not_empty);
+    pthread_mutex_unlock(&q->lock);
+}
+
+Chunk *dequeue(Queue *q) {
+    pthread_mutex_lock(&q->lock);
+
+    while (q->count == 0)
+        pthread_cond_wait(&q->not_empty, &q->lock);
+
+    Chunk *item = q->items[q->head];
+    q->head = (q->head + 1) % QUEUE_SIZE;
+    q->count--;
+
+    pthread_cond_signal(&q->not_full);
+    pthread_mutex_unlock(&q->lock);
+
+    return item;
+}
+
+unsigned char **hashes = NULL;
+int n_hashes = 0;
+
+pthread_mutex_t chunklock;
+pthread_mutex_t hashlock;
+
+
+void *hasher(void *arg) {
+    while (1) {
+        Chunk *chunk = dequeue(&queue);
+        
+        if (chunk == NULL)
+            break;
+        
+        unsigned char *newhash = calculate_sha512((unsigned char *)chunk->data, chunk->size);
+        
+        pthread_mutex_lock(&hashlock);
+		hashes[chunk->pos] = newhash;
+        pthread_mutex_unlock(&hashlock);
+        
+        free(chunk->data);
+        free(chunk);
+        
+    }
+
+    return NULL;
+}
 
 int compare_hashes(unsigned char *a, unsigned char *b, int n) {
   for (int i = 0; i < n; i++)
@@ -85,21 +170,59 @@ int *detect_duplicates(unsigned char **hashes, int n_hashes, int hash_size) {
 //                to each other to determine the number of unique chunks in the
 //                file
 void dedupe(char *filename, int chunk_size, char *output) {
-  FILE *fp;
-  char *buffer = (char *)malloc(chunk_size * sizeof(char));
-  unsigned char **hashes = NULL;
-  int hash_size = size_sha512(), n_hashes = 0;
+  
+    FILE *fp = fopen(filename, "r");
+    
+    assert(fp != NULL);
 
-  // load chunks of the input file and hash them
-  fp = fopen(filename, "r");
-  assert(fp != NULL);
-  while (fread(buffer, sizeof(char), chunk_size, fp) == chunk_size) {
-    hashes = (unsigned char **)realloc(hashes, (n_hashes + 1) *
-                                                   sizeof(unsigned char *));
-    hashes[n_hashes] = calculate_sha512((unsigned char *)buffer, chunk_size);
-    n_hashes++;
-  }
-  fclose(fp);
+    queue_init(&queue);
+
+    pthread_t threads[MAX_THREADS];
+
+
+    int hash_size = size_sha512();
+    int i;
+    
+    pthread_mutex_init(&chunklock, NULL);
+    pthread_mutex_init(&hashlock, NULL);
+
+    for (i = 0; i < MAX_THREADS; i++) {
+        pthread_create(&threads[i], NULL, hasher, NULL);
+    }
+
+    int pos = 0;
+
+    while (1) {
+        char *buffer = malloc(chunk_size);
+        int read = fread(buffer, sizeof(char), chunk_size, fp);
+
+        if (read <= 0) {
+            
+            free(buffer);
+            break;
+        }
+
+        hashes = (unsigned char **) realloc(hashes, (n_hashes+1)*sizeof(unsigned char *));
+        n_hashes++;
+
+        Chunk *chunk = malloc(sizeof(Chunk));
+        chunk->data = buffer;
+        chunk->size = read;
+        chunk->pos = pos++;
+
+        enqueue(&queue, chunk);
+    }
+
+    fclose(fp);
+
+    for (i = 0; i < MAX_THREADS; i++) {
+        enqueue(&queue, NULL);
+    }
+
+    for (i = 0; i < MAX_THREADS; i++) {
+        pthread_join(threads[i], NULL);
+    }
+
 
   int *output_mask = detect_duplicates(hashes, n_hashes, hash_size);
 
@@ -111,8 +234,6 @@ void dedupe(char *filename, int chunk_size, char *output) {
   fprintf(fp, "\n");
   fclose(fp);
 
-  // release stuff
-  free(buffer);
   for (int i = 0; i < n_hashes; i++)
     free(hashes[i]);
   free(hashes);
