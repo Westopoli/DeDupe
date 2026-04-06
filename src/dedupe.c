@@ -1,5 +1,6 @@
 #include <stdlib.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdint.h>
 #include <assert.h>
 #include <stdbool.h>
@@ -9,6 +10,61 @@
 #include <stdatomic.h>
 
 #include "hash_functions.h"
+
+typedef struct {
+  int *slots;
+  int table_size;
+  int mask;
+} HashTable;
+
+HashTable *hashtable_create(int n_hashes) {
+  size_t table_size = 16;
+  while (table_size < (size_t)n_hashes * 2) {
+    table_size = table_size << 1;
+  }
+
+  HashTable *tablePtr = malloc(sizeof(HashTable));
+  tablePtr->table_size = table_size;
+  // we'll use this to compute index with AND instead of % (faster)
+  // starting at 0 for bitwise ops
+  tablePtr->mask = table_size - 1;
+
+  // index for hash
+  tablePtr->slots = malloc(table_size * sizeof(int));
+  for (int i = 0; i < table_size; i++) {
+    tablePtr->slots[i] = -1;
+  }
+
+  return tablePtr;
+}
+
+void hashtable_destroy(HashTable *table) {
+  free(table->slots);
+  free(table);
+}
+
+int hashtable_find_or_insert(HashTable *table, int chunk_id,
+                             unsigned char **hashes, int hash_size) {
+  uint64_t key;
+  memcpy(&key, hashes[chunk_id], sizeof(uint64_t));
+  int slot = (int)(key & (uint64_t)table->mask);
+
+  // Linear Probing: loop as long as the slot is occupied
+  while (table->slots[slot] != -1) {
+
+    if (memcmp(hashes[chunk_id], hashes[table->slots[slot]], hash_size) == 0) {
+      return 1; // True duplicate found
+    }
+
+    slot = (slot + 1) & table->mask;
+  }
+
+  table->slots[slot] = chunk_id;
+
+  return 0; // Unique chunk, successfully inserted
+}
+
+
 
 typedef struct ThreadWorkArgs {
   FILE *fp;
@@ -171,32 +227,29 @@ void* threadLoop(void *arg) {
   }
 }
 
+int *detect_duplicates(unsigned char **hashes, int n_hashes, int hash_size) {
+
+  HashTable *table = hashtable_create(n_hashes);
+  int *mask = malloc(n_hashes * sizeof(int));
+
+  for (int i = 0; i < n_hashes; i++) {
+    mask[i] = hashtable_find_or_insert(table, i, hashes, hash_size);
+  }
+  hashtable_destroy(table);
+
+  return mask;
+}
+
 void makeDuplicatesMask(int num_elements, unsigned char **hashes_array, int hash_size, char *mask) {
   int seen[num_elements];
   memset(seen, 0, num_elements * sizeof(int));
+  HashTable *table = hashtable_create(num_elements);
 
   for (int i = 0; i < num_elements; i++) {
-    int mask_index = fnv1a_hash(hashes_array[i], hash_size) % num_elements;
-    if (seen[mask_index] == 1) {
-      bool matched = false;
-      for (int j = 0; j < i; j++) {
-        if (compare_hashes(hashes_array[i], hashes_array[j], hash_size)) {
-          matched = true;
-          mask[i] = '1';
-          break;
-        }
-      }
-
-      if (matched == false) {
-        seen[mask_index] = 1;
-        mask[i] = '0';
-      }
-
-    } else {
-      seen[mask_index] = 1;
-      mask[i] = '0';
-    }
+      mask[i] = '0' + hashtable_find_or_insert(table, i, hashes_array, hash_size);
   }
+
+  hashtable_destroy(table);
 }
 
 ThreadPool *thread_pool = NULL;
