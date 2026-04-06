@@ -1,13 +1,12 @@
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <stdint.h>
 #include <assert.h>
-#include <stdbool.h>
-#include <unistd.h>
 #include <pthread.h>
 #include <semaphore.h>
-#include <stdatomic.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
 
 #include "hash_functions.h"
 
@@ -64,8 +63,6 @@ int hashtable_find_or_insert(HashTable *table, int chunk_id,
   return 0; // Unique chunk, successfully inserted
 }
 
-
-
 typedef struct ThreadWorkArgs {
   FILE *fp;
   int offset;
@@ -81,25 +78,26 @@ typedef struct ThreadPool {
   int num_threads;
   int work_args_size;
   pthread_mutex_t head_lock;
-  sem_t work_sem;
-  atomic_int jobs_done;
-  pthread_mutex_t jobs_done_lock;
+  sem_t work_sem;      // Tracks filled slots
+  sem_t empty_sem;     // Tracks empty slots (replaces busy wait)
+  sem_t done_sem;      // Tracks completed jobs (replaces atomic spinlock)
 } ThreadPool;
 
-ThreadPool *ThreadPool_Create(int size, int num_threads, void* (*threadLoop)(void*)) {
+ThreadPool *ThreadPool_Create(int size, int num_threads,
+                              void *(*threadLoop)(void *)) {
   ThreadPool *tp = malloc(sizeof(ThreadPool));
   tp->head = 0;
   tp->tail = 0;
   tp->work_args_size = size;
-  tp->work_args = malloc(tp->work_args_size * sizeof(ThreadWorkArgs*));
+  tp->work_args = malloc(tp->work_args_size * sizeof(ThreadWorkArgs *));
   pthread_mutex_init(&tp->head_lock, NULL);
-  sem_init(&tp->work_sem, 0, 0);
 
-  atomic_store(&tp->jobs_done, 0);
-  pthread_mutex_init(&tp->jobs_done_lock, NULL);
+  sem_init(&tp->work_sem, 0, 0);
+  sem_init(&tp->empty_sem, 0, size); // Initialize with queue capacity
+  sem_init(&tp->done_sem, 0, 0);     // Initialize at 0 completed jobs
 
   tp->num_threads = num_threads;
-  tp->threads = malloc(num_threads * sizeof(pthread_t*));
+  tp->threads = malloc(num_threads * sizeof(pthread_t *));
   for (int i = 0; i < tp->num_threads; i++) {
     pthread_t *thread = malloc(sizeof(pthread_t));
     pthread_create(thread, NULL, threadLoop, tp);
@@ -125,41 +123,41 @@ void ThreadPool_Destroy(ThreadPool *tp) {
 
   pthread_mutex_destroy(&tp->head_lock);
   sem_destroy(&tp->work_sem);
+  sem_destroy(&tp->empty_sem);
+  sem_destroy(&tp->done_sem);
 
   free(tp);
 }
 
-void waitForWork(ThreadPool *tp) {
-  sem_wait(&tp->work_sem);
-}
+void waitForWork(ThreadPool *tp) { sem_wait(&tp->work_sem); }
 
-ThreadWorkArgs* getWorkAtHead(ThreadPool *tp) {
+ThreadWorkArgs *getWorkAtHead(ThreadPool *tp) {
   pthread_mutex_lock(&tp->head_lock);
   ThreadWorkArgs *args = tp->work_args[tp->head % tp->work_args_size];
   tp->head++;
   pthread_mutex_unlock(&tp->head_lock);
+
+  // Signal that a slot has freed up in the queue
+  sem_post(&tp->empty_sem);
+
   return args;
 }
 
-bool tryPutWork(ThreadPool *tp, ThreadWorkArgs *args) {
+// Replaced tryPutWork with a blocking putWork
+void putWork(ThreadPool *tp, ThreadWorkArgs *args) {
+  // Block if the queue is at capacity
+  sem_wait(&tp->empty_sem);
+
   pthread_mutex_lock(&tp->head_lock);
-  if (tp->tail - tp->head < tp->work_args_size) {
-    tp->work_args[tp->tail % tp->work_args_size] = args;
-    tp->tail++;
-    pthread_mutex_unlock(&tp->head_lock);
-    sem_post(&tp->work_sem);
-    return true;
-  } else {
-    pthread_mutex_unlock(&tp->head_lock);
-    return false;
-  }
+  tp->work_args[tp->tail % tp->work_args_size] = args;
+  tp->tail++;
+  pthread_mutex_unlock(&tp->head_lock);
+
+  sem_post(&tp->work_sem);
 }
 
-void incrementJobs(ThreadPool *tp) {
-  atomic_fetch_add(&tp->jobs_done, 1);
-}
-
-ThreadWorkArgs *ThreadWorkArgs_Create(FILE *file, int offset, int chunk_size, unsigned char **hashes) {
+ThreadWorkArgs *ThreadWorkArgs_Create(FILE *file, int offset, int chunk_size,
+                                      unsigned char **hashes) {
   ThreadWorkArgs *thread_args = malloc(sizeof(ThreadWorkArgs));
 
   thread_args->fp = file;
@@ -170,31 +168,12 @@ ThreadWorkArgs *ThreadWorkArgs_Create(FILE *file, int offset, int chunk_size, un
   return thread_args;
 }
 
-void ThreadWorkArgs_Destroy(ThreadWorkArgs *thread_args) {
-  free(thread_args);
-}
+void ThreadWorkArgs_Destroy(ThreadWorkArgs *thread_args) { free(thread_args); }
 
-int compare_hashes(unsigned char *a, unsigned char *b, int n) {
-	for(int i=0; i < n; i++)
-		if(a[i] != b[i])
-			return 0;
-	return 1;
-}
+size_t getFileSize(FILE *fp) {
 
-uint64_t fnv1a_hash(unsigned char *data, size_t len) {
-  uint64_t hash = 1469598103934665607ULL;
-
-  for (int i = 0; i < len; i++) {
-    hash ^= data[i];
-    hash *= 1099511628211ULL;
-  }
-
-  return hash;
-}
-
-size_t getFileSize(FILE* fp) {
-
-  if (fp == NULL) return -1;
+  if (fp == NULL)
+    return -1;
 
   size_t pos = ftell(fp);
 
@@ -209,44 +188,35 @@ size_t getFileSize(FILE* fp) {
 void threadWork(ThreadWorkArgs *args) {
   char *buffer = malloc(args->chunk_size);
 
-  pread(fileno(args->fp), buffer, args->chunk_size, args->offset * args->chunk_size);
+  pread(fileno(args->fp), buffer, args->chunk_size,
+        args->offset * args->chunk_size);
 
   args->hashes[args->offset] = calculate_sha512(buffer, args->chunk_size);
 
   free(buffer);
 }
 
-void* threadLoop(void *arg) {
+void *threadLoop(void *arg) {
   ThreadPool *tp = arg;
   while (true) {
     waitForWork(tp);
     ThreadWorkArgs *work_args = getWorkAtHead(tp);
     threadWork(work_args);
     free(work_args);
-    incrementJobs(tp);
+
+    // Signal that a job has been completely processed
+    sem_post(&tp->done_sem);
   }
 }
 
-int *detect_duplicates(unsigned char **hashes, int n_hashes, int hash_size) {
-
-  HashTable *table = hashtable_create(n_hashes);
-  int *mask = malloc(n_hashes * sizeof(int));
-
-  for (int i = 0; i < n_hashes; i++) {
-    mask[i] = hashtable_find_or_insert(table, i, hashes, hash_size);
-  }
-  hashtable_destroy(table);
-
-  return mask;
-}
-
-void makeDuplicatesMask(int num_elements, unsigned char **hashes_array, int hash_size, char *mask) {
+void makeDuplicatesMask(int num_elements, unsigned char **hashes_array,
+                        int hash_size, char *mask) {
   int seen[num_elements];
   memset(seen, 0, num_elements * sizeof(int));
   HashTable *table = hashtable_create(num_elements);
 
   for (int i = 0; i < num_elements; i++) {
-      mask[i] = '0' + hashtable_find_or_insert(table, i, hashes_array, hash_size);
+    mask[i] = '0' + hashtable_find_or_insert(table, i, hashes_array, hash_size);
   }
 
   hashtable_destroy(table);
@@ -258,20 +228,23 @@ void dedupe(char *filename, int chunk_size, char *output) {
   FILE *fp = fopen(filename, "r");
   assert(fp != NULL);
 
-  int hash_size = size_sha512();
+  int hash_size = size_sha512(); // Assuming this is defined in hash_functions.h
   size_t file_size = getFileSize(fp);
   int num_chunks = file_size / chunk_size;
-  unsigned char **hashes = malloc(num_chunks * sizeof(unsigned char*));
+  unsigned char **hashes = malloc(num_chunks * sizeof(unsigned char *));
 
   thread_pool = ThreadPool_Create(20, 11, threadLoop);
 
   for (int i = 0; i < num_chunks; i++) {
     ThreadWorkArgs *args = ThreadWorkArgs_Create(fp, i, chunk_size, hashes);
-    while(!tryPutWork(thread_pool, args));
+
+    // This will now cleanly block if the queue hits its limit (size 20)
+    putWork(thread_pool, args);
   }
 
-  while (true) {
-    if (atomic_load(&thread_pool->jobs_done) == num_chunks) break;
+  // Block until all chunks are signaled as done, acting as a thread barrier
+  for (int i = 0; i < num_chunks; i++) {
+    sem_wait(&thread_pool->done_sem);
   }
 
   ThreadPool_Destroy(thread_pool);
